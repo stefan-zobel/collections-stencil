@@ -606,8 +606,10 @@ Interleaved runs with three
 rounds (see [Benchmarks](#benchmarks)). Each value is the **paired ratio stencil / baseline**,
 median over the rounds, geometric mean over the four sizes 1,400 to 11,000,000. **Below 1 means
 stencil is faster.** RANDOM and SEQUENTIAL keys are shown separately, because they behave very
-differently. "Equal memory" means the same table size at all benchmark sizes (see the footprint
-section of each report). Full reports: `results/<run>/report.md`.
+differently. "Equal memory" means the same table size at all benchmark sizes (measured by the
+footprint step of every run). The last column names the run (v3, v7, ...) that a row comes from;
+the raw data of the runs is not part of the repository, and `scripts/run_bench.py` repeats a run
+on your machine (see [Benchmarks](#benchmarks)).
 
 **`int -> int` maps**
 

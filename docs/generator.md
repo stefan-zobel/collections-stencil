@@ -183,7 +183,8 @@ the selection documents cleanly on its own. The annotation processor uses the sa
 ## Implemented Collections
 
 The templates implemented so far, with the decisions taken and the benchmark runs behind them
-(the experiment names, such as v11, identify the reports in `results/`).
+(the run names, such as v11, identify the benchmark runs; their results are summarized in
+[design-and-benchmarks.md](design-and-benchmarks.md#results)).
 
 ### Hash Maps and Sets
 
