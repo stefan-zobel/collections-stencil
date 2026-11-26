@@ -1,0 +1,455 @@
+# Code Generator
+
+The collection classes of stencil are generated from templates. The generator emits plain,
+readable Java source code: every generated class looks as if it had been written by hand
+for its types, and it is compiled by `javac` like any other source file.
+
+## Goals
+
+- **One hand-tuned template per layout.** A *layout* is a storage scheme with its own
+  algorithms (linear probing over packed slots, tagged blocks, ...). The template is the
+  unit that is optimized and benchmarked. All type combinations of a layout share its code.
+- **Readable output.** No macros, no runtime indirection, no shared abstract base classes
+  in hot paths. Users can read, debug and copy the generated code.
+- **One engine for two delivery modes:** an annotation processor that generates the selected
+  classes into a user's project and package, and an *eject* mode (the command line) that writes
+  them once as sources to take over. The `core` module instantiates all templates into an
+  example package; it is the test bed and benchmark subject and is not published.
+- **No dependencies.** The generator uses only the JDK, so it can run inside an annotation
+  processor without shading.
+
+## Modules and Build
+
+| Location | Contents |
+|----------|----------|
+| `generator/src/main/java` | The engine (`Template`, `Condition`, `Generator`) and the command line entry point `Main`. |
+| `generator/src/main/resources/net/collections/stencil/generator/templates` | The library templates, listed in `index.txt`. |
+| `core/src/test/templates` | Test templates, instantiated for the same types as the classes they test. |
+| `annotations` | `@PrimitiveMap`, `@PrimitiveSet`, and `@PrimitiveHeap` (module `net.collections.stencil.annotations`, source retention). |
+| `processor` | The annotation processor `PrimitiveCollectionsProcessor`, built on `Generator.select` and `Generator.relocate`. |
+| `core/target/generated-sources/stencil` | The generated example classes, package `net.generated.example` (not checked in). |
+| `core/target/generated-test-sources/stencil` | Generated tests (not checked in). |
+
+`core` runs the generator in the `generate-sources` and `generate-test-sources` phases
+(`exec-maven-plugin`, the generator is a `provided` dependency), and `build-helper-maven-plugin`
+adds the output directories as source roots. Files whose content did not change are not
+rewritten, so incremental compilation keeps working. The templates declare the package
+`net.generated.example` (functional interfaces: `net.generated.example.function`); `core` passes
+`--base-package=${stencil.example.package}` to both runs, so the property
+`stencil.example.package` in `core/pom.xml` moves the classes and their tests together. The
+module declaration is filtered from `core/src/main/module-info` with the same property. The
+hand-written experimental `IntIntBlockHashMap` lives in the `bench`
+module (package `net.collections.stencil.bench`), next to its benchmarks.
+
+## Templates
+
+A template is a Java source file with two extensions: line directives and type placeholders.
+The file name (without `.java`) is the pattern of the output class name, the output package is
+the one declared in the template. Templates of different layouts that produce the same class
+names for disjoint type combinations live in different directories (for example
+`linear/KTypeVTypeHashMap.java` and, later, `linear-wide/KTypeVTypeHashMap.java`). The generator
+rejects two templates that produce the same class.
+
+### Directives
+
+A directive is a line whose first non-blank characters are `//#`. Directive lines are removed
+from the output; directives may also appear inside comments, which makes conditional Javadoc
+possible.
+
+| Directive | Meaning |
+|-----------|---------|
+| `//#types K=int V=int\|float` | Instantiations: the cartesian product of the alternatives. Several lines add up. |
+| `//#if cond` / `//#elif cond` / `//#else` / `//#end` | Conditional lines; blocks nest. |
+| `//#-- text` | Template comment. |
+
+Conditions:
+
+```
+expr     := and ('||' and)*
+and      := unary ('&&' unary)*
+unary    := '!' unary | primary
+primary  := '(' expr ')' | DIM '.' property | DIM ('==' | '!=') type ('|' type)*
+property := numeric | integral | floating
+```
+
+Examples: `V == int`, `V == byte|short|char`, `V.numeric && !V.floating`. Conditions in
+branches that are not taken are not evaluated.
+
+### Placeholders
+
+Placeholders are identifiers. They are replaced everywhere, including comments and string
+literals. For a dimension `D` (`K` for keys, `V` for values) bound to `short`:
+
+| Placeholder | Replacement |
+|-------------|-------------|
+| `DType` (alone) | `short` |
+| `DType` inside a longer identifier | `Short`, e.g. `KTypeVTypeHashMap` becomes `IntShortHashMap` |
+| `DBoxed` | `Short` (the wrapper class; `Integer` for `int`, `Character` for `char`) |
+| `DZero` | a zero literal of the type: `0`, `0L`, `0.0f`, `0.0`, `(short) 0`, `(byte) 0`, `(char) 0`, `false` |
+
+Using a placeholder of a dimension that the template does not bind is an error.
+
+### Authoring Rules
+
+- **The `int`/`int` instantiation is the reference.** It is the one that is benchmarked and
+  inspected at the assembly level. Code for other types must not add instructions to the
+  `int`/`int` hot paths. Type-specific code belongs in the small private helpers of the
+  "type-specific core" section (`pack`, `keyOf`, `valueOf`, `withValue`), selected by
+  `//#if`.
+- **Keep hot methods small.** The JIT's inlining decisions depend on bytecode size. A
+  helper that is free for `int` (`(int) (entry >>> 32)`) can cost bytes for another type
+  (`Float.intBitsToFloat(...)`). Check the inlining of representative instantiations
+  (`-XX:+PrintCompilation -XX:+PrintInlining`) after changes to hot paths.
+- **Type-specific semantics** that templates have to handle:
+  - `float` values are stored as raw bits and compared like `Float.equals`
+    (`floatToIntBits`), so `NaN` equals `NaN` and `0.0f` differs from `-0.0f`.
+  - `byte`, `short` and `char` sums are cast back to the value type, so that stored values
+    are always canonical.
+  - `addTo` exists only for numeric value types.
+  - `hashCode` uses the formula of `java.util.Map` on the boxed entries, so maps of all
+    implementations and `HashMap` agree.
+- **Javadoc is checked:** the generated classes are compiled with doclint and `-Werror`, so
+  every public or protected element of a template needs a complete comment (`@param`,
+  `@return`, `@throws`), also in branches selected by `//#if`.
+- **Test templates** use helpers such as `v(int)` that map an `int` to a value of the value
+  type, with `v(0)` equal to the default value, and compare against `java.util.HashMap`
+  with boxed values.
+
+## Current Templates
+
+| Template | Layout | Types |
+|----------|--------|-------|
+| `api/KTypeVTypeMap` | Interface: the common API of all map layouts | `int`, `long` → all primitives |
+| `api/KTypeVTypeConsumer`, `api/KTypeVTypePredicate` | Functional interfaces for `forEach` and `removeIf` | same |
+| `linear/KTypeVTypeHashMap` | Linear probing over packed 64-bit slots (the default) | `int` → `boolean`, `byte`, `short`, `char`, `int`, `float` |
+| `compact/KTypeVTypeCompactHashMap` | Tagged 64-byte blocks with overflow counters | same |
+| `linear-wide/KTypeVTypeHashMap` | Linear probing over interleaved key/value words (`long[2 * capacity]`) | `long` → all primitives; `int` → `long`, `double` (key stored sign-extended) |
+| `compact-wide/KTypeVTypeCompactHashMap` | Tagged 128-byte blocks: control word and seven keys, then seven value words | same |
+| `api/KTypeSet` | Interface: the common API of all set layouts | `int`, `long` |
+| `api/KTypeObjectMap`, `api/KTypeObjectConsumer`, `api/KTypeObjectPredicate` | Interface, `forEach` consumer and `removeIf` predicate of the maps with object values | `int`, `long` keys |
+| `linear-object/KTypeObjectHashMap` | Linear probing over a key array with a parallel `Object[]` of values | same |
+| `api/KTypeObjectSortedMap` | Interface of the sorted maps with object values (navigation through handles, range operations, copies); extends `KTypeObjectMap` | same |
+| `btree-object/KTypeObjectTreeMap` | B+ tree over node pools: leaves with sorted keys and a parallel `Object[]` of values in shared arrays, inner nodes likewise | same |
+| `api/KTypeVTypeSortedMap` | Interface of the sorted maps with primitive values (the same methods; defaults from the caller where the maps with object values return `null`); extends `KTypeVTypeMap` | `int`, `long` → all primitives |
+| `btree/KTypeVTypeTreeMap` | The same B+ tree with a value array of the value type | same |
+| `api/ObjectVTypeMap`, `api/ObjectVTypeConsumer`, `api/ObjectVTypePredicate` | Interface, `forEach` consumer and `removeIf` predicate of the maps with object keys (no `K` dimension: the key is the type parameter `K`) | object → `int`, `long`, `double` |
+| `linear-objectkey/ObjectVTypeHashMap` | Linear probing over an `int[]` of stored hashes with parallel arrays of keys and values; murmur3 finalizer on `hashCode()`; `null` key outside the table | same |
+| `api/KTypeObjectConcurrentMap`, `api/KTypeObjectFunction` | Interface of the thread-safe maps with object values (the contract of `ConcurrentMap`, no index handles) and the function of `compute` | `int`, `long` keys |
+| `concurrent-object/KTypeObjectConcurrentHashMap` | Segments of linear-probing tables as in `linear-object`; lookups without lock (a seqlock per segment), updates under the segment's lock | same |
+| `api/KTypeVTypeConcurrentMap` | Interface of the thread-safe maps with primitive values (with `addTo`; `computeIfAbsent` takes the JDK function from key to value, such as `IntToLongFunction` or `LongUnaryOperator`) | `int`, `long` → `int`, `long`, `double` |
+| `concurrent/KTypeVTypeConcurrentHashMap` | The segmented design over packed 64-bit slots as in `linear` | `int` → `int` |
+| `concurrent-wide/KTypeVTypeConcurrentHashMap` | The segmented design over interleaved key/value words as in `linear-wide` | `long` → `int`, `long`, `double`; `int` → `long`, `double` |
+| `linear-set/KTypeHashSet` | Linear probing over a plain key array | same |
+| `compact-set/KTypeCompactHashSet` | Tagged 64-byte blocks: control word and seven elements | `long` (no `int` variant, see [design-and-benchmarks.md](design-and-benchmarks.md)) |
+| `linked/KTypeVTypeLinkedHashMap` | Insertion-ordered: entries densely in insertion order (parallel arrays of the key and value types) and an `int[]` index table with tags | `int`, `long` → all primitives |
+| `linked-object/KTypeObjectLinkedHashMap` | The same with an `Object[]` of values | `int`, `long` keys |
+| `linked-set/KTypeLinkedHashSet` | The same without values | `int`, `long` |
+| `linked-objectkey/ObjectVTypeLinkedHashMap` | The same with an `Object[]` of keys and a stored hash per entry (hashing of `linear-objectkey`) | `Object` → `int`, `long`, `double` |
+| `api/KTypeSortedSet` | Interface of the sorted sets (navigation, ranges, copies; a default from the caller or an exception where `TreeSet` returns `null`); extends `KTypeSet` | `int`, `long` |
+| `btree-set/KTypeTreeSet` | The B+ tree of `btree/KTypeVTypeTreeMap` without a value array | `int`, `long` |
+| `heap/KTypeHeap` | Priority queue: an implicit 4-ary min-heap in one array; a max-first queue stores the values with their order reversed (`~x`, `-x`) | `int`, `long`, `double` |
+| `indexed-heap/IntVTypeIndexedHeap` | Indexed priority queue: the 4-ary heap over parallel arrays of `int` ids and priorities, plus the heap position of every id in an `int[]` indexed by id (no `K` dimension: the ids are `int`) | `int` ids → `int`, `long`, `double` priorities |
+| `indexed-heap-long/LongVTypeIndexedHeap` | Indexed priority queue with arbitrary keys: the same heap over parallel arrays of table slots and priorities, plus an open-addressing table of keys and heap positions in one `long[]` (empty slot: position word 0); the table slot serves as the dense id | `long` keys → `int`, `long`, `double` priorities |
+| `list/KTypeArrayList` | List in a growable array (by half its length, at least 16); `removeAt`/`removeValue` instead of `remove(int)` | `int`, `long`, `double` |
+| `deque/KTypeArrayDeque` | Double-ended queue in a ring buffer with a power-of-two capacity; access by index in constant time | `int`, `long`, `double` |
+
+Every map class implements the interface of its type pair, every set class the interface of its element type. `equals` works across
+implementations.
+
+## Command Line (Eject Mode)
+
+```powershell
+java -jar generator\target\collections.stencil-generator-0.1.0-SNAPSHOT.jar --out=src\main\java --include="IntLongHashMap" --package=com.example.coll --no-header
+```
+
+| Option | Meaning |
+|--------|---------|
+| `--out=DIR` | Source root to write to (package directories are created). |
+| `--templates=DIR` | Read templates from a directory instead of the bundled ones. |
+| `--include=REGEX` | Only classes whose simple name matches, plus the generated types they use (interface, consumer, predicate). |
+| `--package=NAME` | Put all generated classes into this package (imports between them are dropped). |
+| `--base-package=NAME` | Replace the package of the templates, `net.generated.example`, with this package and keep the subpackages: the functional interfaces go into `NAME.function`. Not together with `--package`. |
+| `--package-private` | Make the generated top-level types package-private (for a library that must not export them). |
+| `--clean` | Delete `*.java` files below `--out` that this run did not produce (build directories only). |
+| `--no-header` | Omit the comment that names the template (for code you take over). |
+
+The generated classes depend only on the JDK and on the interfaces generated with them;
+`--include` adds those automatically. A Javadoc link to a generated class that is not part of
+the selection (for example from `IntLongMap` to `IntLongCompactHashMap`) becomes `{@code ...}`, so
+the selection documents cleanly on its own. The annotation processor uses the same two steps
+(`Generator.select`, `Generator.relocate`, and `Generator.packagePrivate` for
+`packagePrivate = true`).
+
+## Implemented Collections
+
+The templates implemented so far, with the decisions taken and the benchmark runs behind them
+(the experiment names, such as v11, identify the reports in `results/`).
+
+### Hash Maps and Sets
+
+- **Narrow entries** (`int` keys with values up to 32 bits): `linear` and `compact`, packed into
+  one 64-bit slot.
+- **Wide entries** (`linear-wide`, `compact-wide`): `long` keys with any primitive value, and
+  `int` keys with `long`/`double` values. An `int` key is stored sign-extended in its 64-bit
+  word, so layout and code paths are those of the `long` instantiations. The compact variant
+  uses blocks of 128 bytes: the control word and seven keys in the first cache line, the seven
+  value words in the second (a 64-byte variant with three entries per block was measured and
+  rejected).
+- **Object values** (`linear-object`, `IntObjectHashMap<V>`/`LongObjectHashMap<V>`): parallel
+  arrays (`int[]`/`long[]` keys, `Object[]` values). The layout has nothing in common with the
+  value-bit encoding of the primitive templates, so it is a template family of its own that
+  binds only `K` and writes the type variable `<V>` literally; no placeholder for type
+  parameter lists was needed.
+- **Sets** (`linear-set`, `compact-set`): `int` and `long` elements; the compact layout only
+  for `long` (see [design-and-benchmarks.md](design-and-benchmarks.md) for why there is no compact `int` set). The `forEach` consumers
+  and `removeIf` predicates are the JDK's `IntConsumer`/`LongConsumer` and
+  `IntPredicate`/`LongPredicate`.
+- **API completion:** allocation-free iteration over index handles, `removeIf`, bulk
+  operations, conversions, copy constructors (shared defaults in the interfaces, layout-specific
+  parts in the templates).
+
+Benchmark suites: `--suite=int|long|intset|longset|intobj|longobj`.
+
+### Annotation Processor
+
+- **Annotation processor** (modules `annotations` and `processor`): one repeatable
+  annotation per kind of collection (`@PrimitiveMap`, `@PrimitiveSet`, `@PrimitiveHeap`,
+  `@PrimitiveList`, `@PrimitiveDeque`) on a package or type. The processor generates the requested classes plus the
+  types they use into the target package (default: the package of the annotated element), once
+  per class even if several elements request it, and reports invalid combinations as errors at
+  the annotation. Registered as an aggregating processor for incremental Gradle builds.
+- **Package-private output** (`packagePrivate = true` in every annotation,
+  `--package-private` on the command line, `Generator.packagePrivate`): removes the `public`
+  modifier of each generated top-level type, for libraries that must not export the generated
+  types; members keep their modifiers. The visibility applies per target package, since the
+  classes of a package share their interfaces; requests for one package that differ in it are a
+  compile error at the annotation.
+
+### Sorted Maps and Sets
+
+- **Sorted maps with object values** (`api/KTypeObjectSortedMap`, `btree-object/KTypeObjectTreeMap`,
+  `IntObjectTreeMap<V>`/`LongObjectTreeMap<V>`): implemented and tested (differential tests
+  against `java.util.TreeMap` and structural invariants, also with tiny node capacities),
+  requested with `@PrimitiveMap(..., value = Object.class, sorted = true)`, benchmark suite
+  `--suite=longsorted`. Decisions taken on the design below: `null` values are allowed
+  (`pollFirst(consumer)` and the handles for the unambiguous case); no `removeAt`, since
+  `indexRemove` invalidates the handles as in the hash maps; values are read with `indexGet`, as
+  in the other maps. Node capacities: 64 entries per leaf and 64 children per inner
+  node (measured against 32 and 128). Search within a node: a blocked search (seven independent
+  comparisons select a block of eight keys, which is searched without branches), measured
+  against plain and branchless binary search. A fast path appends a key greater than every key directly to
+  the last leaf (ascending builds 3-4x faster). Benchmark run v11 against fastutil's red-black
+  and AVL trees and `TreeMap`: lookups 2-4x faster, iteration about 20x, range scans 3-6x,
+  large builds up to 2x, about 23 instead of 40 or 64 bytes per entry; slower only for inserts
+  and removals in small maps (see the results in [design-and-benchmarks.md](design-and-benchmarks.md)). Primitive values: see below.
+- **Sorted maps with primitive values** (`api/KTypeVTypeSortedMap`, `btree/KTypeVTypeTreeMap`;
+  `int` and `long` keys with all primitive value types, for example `LongLongTreeMap`):
+  implemented and tested (the differential tests and structural invariants of the maps with object values against
+  `TreeMap` with boxed values, for all 16 combinations), requested with `sorted = true` and a
+  primitive value type. The template is the tree of the maps with object values with a value array of the exact
+  value type, so one template covers all combinations without a value encoding; `addTo` for
+  numeric values, no `computeIfAbsent`, nothing to clear on removal. Decision on results
+  without an entry, where the maps with object values return `null`: a handle is `-1`; a key is
+  a default passed by the caller, and `firstKey`/`lastKey` throw; a value is a default passed
+  by the caller (`floorValue(key, defaultValue)` has no form without a default, because a
+  query below the least key is a regular case); `pollFirst()`/`pollLast()` throw a
+  `NoSuchElementException` for an empty map, like `firstKey`/`lastKey`, in all sorted and
+  insertion-ordered maps (they first returned the zero value, which the API review before a
+  first release replaced), with `pollFirst(consumer)` as the form without an exception. Benchmark suite
+  `--suite=longlongsorted` (`long` keys and values, against fastutil's and Speiger's tree maps
+  and `TreeMap<Long,Long>`). Run v19 (1,400 to 1,400,000 entries, RANDOM and SEQUENTIAL
+  keys) against fastutil's and Speiger's red-black trees and `TreeMap<Long,Long>`: faster in
+  143 of 144 cells; lookups of present keys 1.5-4x, `floor` and absent keys 1.6-7x, iteration 17-78x, range
+  scans 2.6-15x, random builds from 180,000 entries 1.3-2.9x, ascending builds 2.8-11x, `churn`
+  1.2-4x, at 30.7 instead of 40, 48, and 88 bytes per entry. The exception: random builds of
+  1,400 entries take 1.26x the time of Speiger's tree. Inserts and removals in small maps,
+  the weak spot of the maps with object values, are faster here (no garbage-collector
+  barriers on a `long[]`).
+- **Sorted sets** (`api/KTypeSortedSet`, `btree-set/KTypeTreeSet`; `IntTreeSet`,
+  `LongTreeSet`): implemented and tested (differential tests against `TreeSet` with the
+  structural invariants of the sorted maps, and the shared set tests), requested with
+  `@PrimitiveSet(sorted = true)`. The template is the tree of the maps with primitive values without the value array,
+  with the same node capacities. An element without a match is a default passed by the caller
+  (`floor(key, defaultElement)`, ...); `first`, `last`, `pollFirst`, and `pollLast` throw for
+  an empty set, like the insertion-ordered sets. Benchmark suite `--suite=longsetsorted`
+  (against fastutil's and Speiger's tree sets and `TreeSet<Long>`). Run v20 (1,400 to
+  1,400,000 elements, RANDOM and SEQUENTIAL keys) against fastutil's and Speiger's red-black
+  trees and `TreeSet<Long>`: faster in all 144 cells; `contains` 1.5-6.4x, `floor` 1.5-5.6x,
+  iteration 11-113x, range scans 3-12x, `churn` 1.5-6.4x, `removeRange` 1.15-4.5x, random
+  builds 1.06-4x, ascending builds 2.7-18x, at 15.7 instead of 32, 40, and 64 bytes per
+  element (1,400,000 elements). The closest cell: random builds of 1,400 elements against
+  Speiger's tree (0.95).
+
+### Maps with Object Keys
+
+- **Object keys with primitive values** (`api/ObjectVTypeMap`, `linear-objectkey/ObjectVTypeHashMap`,
+  `ObjectIntHashMap<K>`/`ObjectLongHashMap<K>`/`ObjectDoubleHashMap<K>`): implemented and tested
+  (differential tests against `java.util.HashMap`, also with colliding hash codes), requested
+  with `@PrimitiveMap(key = Object.class, value = int.class)`. Decisions: the `null` key is
+  allowed (stored outside the table); lookups take `Object`, as in `java.util.Map`. A first
+  version without stored hashes lost to `HashMap` by 3-8x for absent keys and churn, because
+  every slot on a probe chain loaded a key object for `equals`; with an `int[]` of stored hashes
+  (4 bytes per slot) absent-key lookups became 2.3x and churn 2x faster (smoke runs). The
+  murmur3 finalizer replaces Fibonacci hashing here: decimal-string hash codes produced probe
+  chains of 35 slots instead of 5. Benchmark suite `--suite=objectint` (`String` keys, with a
+  Zipf-like counting operation). Run v12 (sizes up to 1,400,000): against fastutil and HPPC,
+  absent-key lookups take about a third of the time, churn about half, hits, builds, and
+  counting 15-30 % less, at 18 instead of 12 bytes per entry; against `HashMap<String,Integer>`
+  (54 bytes per entry) faster for builds and counting, about 2.8x slower for absent keys.
+
+### Thread-Safe Maps
+
+- **Thread-safe maps with object values** (`api/KTypeObjectConcurrentMap`,
+  `concurrent-object/KTypeObjectConcurrentHashMap`, `IntObjectConcurrentHashMap<V>`/
+  `LongObjectConcurrentHashMap<V>`): implemented and tested (differential tests against
+  `java.util.concurrent.ConcurrentHashMap`, stress tests with concurrent readers and writers,
+  atomic counters, at-most-once `computeIfAbsent`, and concurrent growth), requested with
+  `@PrimitiveMap(..., value = Object.class, concurrent = true)`. Decisions: segments of
+  linear-probing tables with a seqlock each, so lookups write nothing shared (the alternative, a
+  lock-free table as in JCTools' `NonBlockingHashMapLong`, needs tombstones and cooperative
+  resizing); `null` values are not allowed, as in `ConcurrentHashMap`; atomic operations run
+  their function under the segment's lock and detect recursive updates. Related work: Speiger
+  Primitive-Collections has the same segmented model, but its lookups take a
+  `StampedLock.readLock()`, and its segments keep an insertion-order link array; trivago's
+  `fastutil-concurrent-wrapper` wraps fastutil maps in buckets with a `ReadWriteLock` (primitive
+  values only). Benchmark suites `--suite=intconc` and `--suite=longconc` with 1, 6, and 12
+  threads. Runs v13 and v13a: against `ConcurrentHashMap` builds 2-3x faster, lookups of present
+  keys up to 1.4x with several threads, a third of the memory, updates under contention about even; against JCTools
+  reads 1.3-3x slower (sparse lock-free table, twice the memory), writes up to 10x faster;
+  faster than Speiger everywhere, up to 2x with 12 threads. Thread-safe maps with `int`, `long`,
+  and `double` values (`api/KTypeVTypeConcurrentMap`, `concurrent/` and `concurrent-wide/`
+  `KTypeVTypeConcurrentHashMap`): implemented and tested the same way, with an atomic `addTo`
+  (at first under the segment's lock); requested with `concurrent = true` and a primitive value
+  type.
+  Benchmark suites `--suite=intintconc` and `--suite=longlongconc` (counting hot keys,
+  also against `ConcurrentHashMap` with `LongAdder` values, trivago's wrapper, and Speiger's
+  maps). Runs v14 and v14a: lookups of present keys as fast as JCTools (faster with 12 threads),
+  1.5-2x faster than `ConcurrentHashMap`, a quarter of its memory; counting hot keys from 6 or 12
+  threads is 4-5x slower than JCTools (`AtomicLong`) and 2x slower than `LongAdder` values,
+  because every `addTo` takes the segment's lock. Since then, `addTo` on a present key works
+  without lock (an atomic add on the value word; a counter of active adders per segment that
+  every locked update waits for): in experiment v15, counting hot keys with 6 and 12 threads
+  became 2.3-3x faster, faster than `LongAdder` values and 1.6-1.8x slower than JCTools, at
+  most 5 % slower insertions and removals; run v16 confirmed this for the adopted code (12
+  threads: 0.70x the time of `LongAdder` values, 1.65x the time of JCTools).
+
+### Insertion-Ordered Maps and Sets
+
+- **Insertion-ordered maps and sets** (`linked/KTypeVTypeLinkedHashMap`,
+  `linked-object/KTypeObjectLinkedHashMap`, `linked-set/KTypeLinkedHashSet`; `int` and `long`
+  keys with all primitive value types and object values): implemented and tested (differential
+  tests against `java.util.LinkedHashMap` and `LinkedHashSet` that compare the order in both
+  directions after every kind of update, with holes, compaction, and growth), requested with
+  `linked = true` in `@PrimitiveMap` and `@PrimitiveSet`. The classes implement the existing
+  map and set interfaces; the order methods (`firstKey`, `lastKey`, `pollFirst`, `pollLast`,
+  `lastIndex`, `prevIndex`, `putLast`, `moveToLast`) are methods of the classes, since there
+  is one implementation per interface. Decisions: `put` on a present key keeps its position;
+  no `putFirst` and no access-order mode. Layout: the entries densely in insertion order
+  (parallel arrays of the exact key and value types, so one template covers all 16 primitive
+  combinations without a value encoding) plus an `int[]` index table with tags; removals leave
+  holes and tombstones, and a full entry array is compacted in place or grows. The layout was
+  chosen in run v17 (`--suite=longlinked`, both layouts as experiment classes in the benchmark
+  module, removed since) against a linear-probing table with a link word per slot: 5-300x
+  faster iteration, about 2.5x faster large builds, 1.5-3x faster replacement of entries, and
+  19.5 instead of 30 bytes per entry, against 1.4-2.5x slower lookups of present keys and
+  1.6-2.5x slower `putLast` on a present key (see [design-and-benchmarks.md](design-and-benchmarks.md), design decisions). Run v18 of
+  the generated `LongObjectLinkedHashMap` against fastutil's linked map: iteration 5-260x
+  faster, builds from 180,000 entries 2.3-3x, `churn` 1.7-2x, `fifo` 2.1-3.7x, absent keys
+  1.6x, at 19.5 instead of 30 bytes per entry; present keys even up to 180,000 entries and
+  1.4x slower at 1,400,000, `putLast` on a present key 1.4-2x slower. Against
+  `LinkedHashMap<Long,Object>` (70 bytes per entry) it is faster in every cell. With object
+  keys (`linked-objectkey/ObjectVTypeLinkedHashMap`; `ObjectIntLinkedHashMap<K>`, ...):
+  implemented and tested (the same differential tests with the `null` key, equal but not
+  identical keys, and colliding hash codes; checks that growth, compaction, and removals by
+  position call no `hashCode` and that removed keys are released), requested with
+  `@PrimitiveMap(key = Object.class, linked = true)`. The layout is that of the primitive keys
+  with an `Object[]` of keys and a stored hash per entry, hashed like the hash maps with object
+  keys. Benchmark suite `--suite=objectintlinked` (against fastutil's and Speiger's
+  `Object2IntLinkedOpenHashMap` and `LinkedHashMap<String,Integer>`). Run v21 (1,400 to
+  1,400,000 entries, RANDOM and SEQUENTIAL keys) against fastutil's and Speiger's linked maps:
+  iteration 1.8-38x, `fifo` 2.6-8x, `churn` 1.7-3x, builds 1.3-4.5x, absent keys 1.1-3.8x,
+  present keys 1.2-1.7x faster, at 19.5 instead of 24 bytes per entry; `count` on keys with
+  Zipf-like ranks up to 1.8x slower at 1,400,000 entries (72 ns against 40-44 ns), `touch` up
+  to 1.6x slower than fastutil. The diagnosis run `20261124-diag-count` explains `count`: it
+  scatters by up to 30% (58 ns there, as the hash map with object keys), and the frequent keys
+  are inserted first, so fastutil's linked map, which refills its table in insertion order,
+  finds them in their home slots (1.1 slots visited against 1.5 in its hash map; 22-34% faster
+  than its hash map). The rest is the extra access through the index table; no change. `LinkedHashMap<String,Integer>` (62 bytes per entry) looks up absent keys 3-4x
+  faster, as `HashMap` does against the hash map with object keys.
+
+### Priority Queues
+
+- **Priority queues** (`heap/KTypeHeap`, `indexed-heap/IntVTypeIndexedHeap`; `IntHeap`,
+  `LongHeap`, `DoubleHeap`, `IntLongIndexedHeap`, ...): implemented and tested (differential
+  tests against `PriorityQueue` and against a map of priorities; Dijkstra's algorithm against an
+  O(n^2) reference), requested with `@PrimitiveHeap(priority = ..., indexed = ...)`. Min-heap
+  by default, max-first with a constructor flag; no comparator. The arity is the result of the
+  experiment runs v22a to v22c and a diagnosis (see [design-and-benchmarks.md](design-and-benchmarks.md), priority queue design
+  decisions): 4-ary with a plain loop over the children. An 8-ary heap was up to 20% faster at
+  its best, but twice as slow for any data when the JIT compiled it while the queue was in
+  ascending order (the first version, measured in runs v22 and v23). Benchmark suites
+  `--suite=longheap` and `--suite=intlongindexedheap`. Run v24 (1,400 to 1,400,000 values)
+  against fastutil's and Speiger's binary heaps: `sort` 1.1-2x and the event-queue loop `hold`
+  1.16-2x faster for random and ascending values, `build` 1.2-1.35x faster for random values
+  and about even for ascending ones (up to 1.09x slower). `PriorityQueue<Long>` up to 9.5x
+  slower. Run v25: `IntLongIndexedHeap` computes shortest paths up to 1.44x faster than
+  fastutil's indirect queue and 1.8-2.5x faster than `PriorityQueue` with lazy deletion.
+- **Indexed priority queues with arbitrary keys** (`indexed-heap-long/LongVTypeIndexedHeap`;
+  `LongIntIndexedHeap`, `LongLongIndexedHeap`, `LongDoubleIndexedHeap`;
+  `@PrimitiveHeap(indexed = true, key = long.class)`): done for `long` keys. A hash table maps
+  every key to its heap position, and the heap stores the table slot of each entry, so sifts
+  need no hashing. Run v28a: against the workaround of a map from keys to dense ids plus the
+  dense queue, 1.2-1.25x faster with stencil's own classes and 1.5-1.65x faster with fastutil's,
+  at 36 bytes per key (52 and 46 bytes). **Open:** object keys.
+
+### Lists and Deques
+
+- **Lists and deques** (`list/KTypeArrayList`, `deque/KTypeArrayDeque`; `IntArrayList`, ...,
+  `IntArrayDeque`, ...): implemented and tested (differential tests against `ArrayList`, for
+  the deque also across the end of the array and while growing with wrapped contents),
+  requested with `@PrimitiveList(element = ...)` and `@PrimitiveDeque(element = ...)`. No
+  method takes an `int` that could be an index or a value (`removeAt`, `removeValue`,
+  `discardFirst`). Benchmark suites `--suite=intlist` and `--suite=intdeque`. Run v26: reads,
+  iteration, and insertion in the middle as fast as fastutil, HPPC, Eclipse, and Speiger;
+  `build` 1.1x slower than fastutil on average (growth sequence; small lists 1.3-1.6x slower on
+  Windows only, cause not found, see the results in [design-and-benchmarks.md](design-and-benchmarks.md)). Run v27 with the diagnosis run of
+  `fifo` and `window`: the deque is 1.15-1.5x faster than fastutil's and Speiger's queues and up
+  to 1.16x slower than HPPC's deque. `ArrayList<Integer>` and `ArrayDeque<Integer>` 1.45-6x
+  slower.
+
+## Roadmap
+
+Open items, neither decided nor implemented yet:
+
+- **Narrow values with `long` keys** as parallel arrays (12 instead of 16 bytes per slot, but
+  two cache lines per hit): not measured yet.
+- **Options besides types:** template options (`//#options name=a|b`) that conditions can
+  test, so that the example classes in `core` keep the defaults and the annotation processor
+  can select others. Not needed yet: identity hashing, the planned first option, was dropped (see
+  [design-and-benchmarks.md](design-and-benchmarks.md), `IntIntHashMap` design decisions), because it helps only for dense keys accessed in
+  key order and makes linear probing vulnerable to strided keys.
+- **Further key types** from the reduced type core: `float`/`double` keys through a layer that
+  canonicalizes them to their `int`/`long` bits; `byte`/`short`/`char` keys by direct addressing
+  (a table indexed by the key). (`Object` keys with `int`, `long`, and `double` values are done,
+  see [Maps with Object Keys](#maps-with-object-keys).)
+- **Further map kinds with `long` keys and object values.** Estimates are not measured;
+  per-entry bytes exclude the value object and assume compressed references without compact
+  object headers.
+  - **Sorted map as a B+ tree:** implemented with object values, with primitive values, and as
+    sorted sets (see [Sorted Maps and Sets](#sorted-maps-and-sets); the design decisions are in
+    [design-and-benchmarks.md](design-and-benchmarks.md)).
+    Open: aggregates over a key range (for example the sum of the values), object keys, and
+    larger leaves for the sets (without values, a leaf of 128 `long` elements has the size of a
+    leaf of 64 `long -> long` entries; not measured).
+  - **Insertion-ordered map:** implemented with `int`, `long`, and object keys (see
+    [Insertion-Ordered Maps and Sets](#insertion-ordered-maps-and-sets)). Open: `putFirst` and
+    an access-order mode. Possible refinements of the dense layout, not measured: growing the
+    entry arrays in smaller steps than the index table, and renumbering the positions in the
+    index table during compaction instead of rebuilding it.
+- **A common interface of the sorted and the insertion-ordered maps and sets** (`firstKey`,
+  `lastKey`, `pollFirst`, `pollLast`, `lastIndex`, `prevIndex`, which both kinds already have
+  under the same names), like `SequencedMap` in the JDK, so that code can handle both kinds
+  alike. Not done yet: a new super-interface can be added later without breaking existing code.
+- **Indexed priority queues with object keys:** the queues with arbitrary keys exist for `long`
+  keys (see [Priority Queues](#priority-queues)).
+- **Later:** maybe off-heap storage through FFM; the Vector API once it is final.
