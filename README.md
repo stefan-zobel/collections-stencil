@@ -18,8 +18,8 @@ classes you never use:
 If you would rather own and edit the code, a command line generator writes the same classes
 once into your source tree.
 
-> **Status:** pre-release (`0.1.0-SNAPSHOT`), not yet on Maven Central. To try it, build it
-> locally (see [Installation](#installation)). The API may still change before 1.0.
+> **Status:** version `1.0.0`, not yet on Maven Central. To try it, build it
+> locally (see [Installation](#installation)).
 
 ## Contents
 
@@ -79,7 +79,7 @@ cd collections-stencil
 
 This builds and tests all modules and installs `collections.stencil-annotations`,
 `collections.stencil-processor`, and `collections.stencil-generator` with the version
-`0.1.0-SNAPSHOT`.
+`1.0.0`.
 
 ## Quick Start
 
@@ -94,7 +94,7 @@ configured explicitly, as here.
     <dependency>
         <groupId>net.sourceforge.streamsupport</groupId>
         <artifactId>collections.stencil-annotations</artifactId>
-        <version>0.1.0-SNAPSHOT</version>
+        <version>1.0.0</version>
         <scope>provided</scope>
     </dependency>
 </dependencies>
@@ -109,7 +109,7 @@ configured explicitly, as here.
                     <path>
                         <groupId>net.sourceforge.streamsupport</groupId>
                         <artifactId>collections.stencil-processor</artifactId>
-                        <version>0.1.0-SNAPSHOT</version>
+                        <version>1.0.0</version>
                     </path>
                 </annotationProcessorPaths>
             </configuration>
@@ -118,7 +118,7 @@ configured explicitly, as here.
 </build>
 ```
 
-**Gradle** (Kotlin DSL); the processor supports incremental compilation:
+**Gradle** the processor supports incremental compilation:
 
 ```kotlin
 repositories {
@@ -127,8 +127,8 @@ repositories {
 }
 
 dependencies {
-    compileOnly("net.sourceforge.streamsupport:collections.stencil-annotations:0.1.0-SNAPSHOT")
-    annotationProcessor("net.sourceforge.streamsupport:collections.stencil-processor:0.1.0-SNAPSHOT")
+    compileOnly("net.sourceforge.streamsupport:collections.stencil-annotations:1.0.0")
+    annotationProcessor("net.sourceforge.streamsupport:collections.stencil-processor:1.0.0")
 }
 ```
 
@@ -335,7 +335,7 @@ to own and modify the code, or that cannot use an annotation processor. The jar 
 dependencies:
 
 ```shell
-java -jar generator/target/collections.stencil-generator-0.1.0-SNAPSHOT.jar \
+java -jar generator/target/collections.stencil-generator-1.0.0.jar \
     --out=src/main/java \
     --include='LongLongHashMap|IntArrayList' \
     --package=com.example.stats \
@@ -384,6 +384,8 @@ including these cases, the methodology, and the memory measurements, are in
   benchmark the project.
 - [docs/generator.md](docs/generator.md): the template engine, the template syntax, and the
   roadmap.
+- [core/src/generated](core/src/generated): every template instantiated for all of its types
+  (package `net.generated.example`), to read the generated code without building the project.
 
 ## License
 

@@ -1,0 +1,5 @@
+# LF line endings in the repository and in every working tree (the generator writes LF, so the
+# checked-in generated classes never differ only in line endings). Windows batch files keep CRLF.
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.bat text eol=crlf

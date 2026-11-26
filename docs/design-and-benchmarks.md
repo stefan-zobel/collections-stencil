@@ -5,9 +5,9 @@ project, the API in depth, the design decisions behind every layout, the benchma
 and how to build and benchmark the project. For using the annotation processor or the
 command line generator, see the [README](../README.md).
 
-Research prototype, not released yet. Goal: primitive collections that match or beat fastutil,
-HPPC, and Eclipse Collections. All modules are compiled for JDK 21 (class files and APIs), but
-built and tested with JDK 25 only; the generated classes also compile with `--release 19`. The
+Version 1.0.0. Goal: primitive collections that match or beat fastutil, HPPC, and Eclipse
+Collections. All modules are compiled for JDK 21 (class files and APIs) and built with JDK 25;
+the tests pass on JDK 21 and 25, and the generated classes also compile with `--release 19`. The
 classes are generated from one hand-tuned template per layout (see
 [generator.md](generator.md)), in two ways: by an annotation processor into a user's project, and
 as copyable sources from the command line. The `core` module instantiates all templates into the
@@ -178,7 +178,7 @@ only when configured explicitly, as here):
 <dependency>
     <groupId>net.sourceforge.streamsupport</groupId>
     <artifactId>collections.stencil-annotations</artifactId>
-    <version>0.1.0-SNAPSHOT</version>
+    <version>1.0.0</version>
     <scope>provided</scope>
 </dependency>
 ...
@@ -189,7 +189,7 @@ only when configured explicitly, as here):
             <path>
                 <groupId>net.sourceforge.streamsupport</groupId>
                 <artifactId>collections.stencil-processor</artifactId>
-                <version>0.1.0-SNAPSHOT</version>
+                <version>1.0.0</version>
             </path>
         </annotationProcessorPaths>
     </configuration>
@@ -1193,11 +1193,13 @@ JDK 21 or later (`maven.compiler.release` is 21, untested there). Maven comes wi
 ```
 
 `install` (rather than `verify`) also puts the modules into the local Maven repository, which
-projects that use the annotation processor need. Generated sources are in
-`core\target\generated-sources\stencil` (tests in `core\target\generated-test-sources\stencil`), in
-the package `net.generated.example`. Another package:
-`.\mvnw.cmd -B -pl core clean verify -Dstencil.example.package=com.example.coll` (the `bench` module
-imports the classes from the default package).
+projects that use the annotation processor need. The generated example classes are checked in
+under `core\src\generated\java`, in the package `net.generated.example`; the build regenerates
+them, so a template change shows up in their diff. The generated tests are in
+`core\target\generated-test-sources\stencil`. Another package (written to `target`, so that the
+checked-in classes stay untouched):
+`.\mvnw.cmd -B -pl core clean verify -Dstencil.example.package=com.example.coll "-Dstencil.generated.main=target/generated-sources/stencil"`
+(the `bench` module imports the classes from the default package).
 To change a generated class, edit its template.
 
 The main sources of `generator`, `annotations`, `processor`, and `core` (including the
@@ -1394,13 +1396,16 @@ Options: `--suite=int|long|intset|longset|intobj|longobj|longsorted|longlongsort
 counters), and `--jvmArgs=-XX:+AlwaysPreTouch,…` adds JVM
 options to every fork. Profiled runs are not meant for timing comparisons. Duration ≈ rounds × cells × implementations × ~5 s. Default:
 5 × 40 × 9 × 5 s ≈ 150 min per platform (restrict with `--impls` and `--rounds`). The scripts take
-the JDK from `JAVA_HOME` (or `-JavaHome`).
+the JDK from `JAVA_HOME` (or `--java-home`).
 
 ```powershell
-.\scripts\run-all.ps1                       # Windows, then WSL, then analyze.py -> results\<timestamp>\report.md + plots\
-.\scripts\run-all.ps1 -Name smoke -RunnerArgs "--rounds=1 --sizes=1400 --wi=1 --w=200 --i=1 --r=200"
-.\scripts\run-bench-windows.ps1 -OutDir results\x -RunnerArgs "--rounds=3 --impls=stencil,fastutil"
+python scripts\run_bench.py                # Windows, then WSL, then analyze.py -> results\<timestamp>\report.md + plots\
+python scripts\run_bench.py --name smoke -- --rounds=1 --sizes=1400 --wi=1 --w=200 --i=1 --r=200
+python scripts\run_bench.py --platforms=windows --out=results\x -- --rounds=3 --impls=stencil,fastutil
 ```
+
+Arguments after `--` go to the runner on both platforms; `python scripts\run_bench.py --help`
+lists the other options (WSL distribution, Python for `analyze.py`, `--no-analyze`).
 
 ```bash
 bash scripts/run-bench-wsl.sh /mnt/e/.../results/x [runner arguments]   # WSL only

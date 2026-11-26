@@ -1,6 +1,5 @@
 target/
 results/
-scripts/
 tools/hsdis/
 .idea/
 *.iml

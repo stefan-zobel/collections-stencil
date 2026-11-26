@@ -1,0 +1,149 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>net.sourceforge.streamsupport</groupId>
+        <artifactId>collections.stencil-parent</artifactId>
+        <version>1.0.0</version>
+    </parent>
+
+    <artifactId>collections.stencil-core</artifactId>
+    <name>collections.stencil-core</name>
+    <description>All templates instantiated into an example package: the test bed, the benchmark subject,
+        and a showcase of the generated code. Not published.</description>
+
+    <properties>
+        <!-- Package of the generated example classes; the functional interfaces go into its subpackage
+             "function". The bench module imports the classes from the default package: if you change
+             this property, adapt its imports or build this module alone (-pl core). -->
+        <stencil.example.package>net.generated.example</stencil.example.package>
+        <stencil.generated.module-info>${project.build.directory}/generated-sources/module-info</stencil.generated.module-info>
+        <!-- An example, not a library: never deployed. -->
+        <maven.deploy.skip>true</maven.deploy.skip>
+        <maven.source.skip>true</maven.source.skip>
+        <maven.javadoc.skip>true</maven.javadoc.skip>
+        <!-- The generated library classes are checked in (src/generated/java), so that the generated code
+             can be read in the repository and every template change shows up in its diff. The build
+             regenerates them, writes only changed files, and deletes stale *.java files (clean does not
+             touch this directory). The generated tests stay in target. -->
+        <stencil.generated.main>${project.basedir}/src/generated/java</stencil.generated.main>
+        <stencil.generated.test>${project.build.directory}/generated-test-sources/stencil</stencil.generated.test>
+    </properties>
+
+    <dependencies>
+        <!-- Build-time only: runs the templates in generate-sources. Not a runtime dependency. -->
+        <dependency>
+            <groupId>net.sourceforge.streamsupport</groupId>
+            <artifactId>collections.stencil-generator</artifactId>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>exec-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <!-- The library classes from the templates bundled with the generator. -->
+                        <id>generate-main</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>net.collections.stencil.generator.Main</mainClass>
+                            <classpathScope>compile</classpathScope>
+                            <arguments>
+                                <argument>--out=${stencil.generated.main}</argument>
+                                <argument>--base-package=${stencil.example.package}</argument>
+                                <argument>--clean</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <!-- The tests from src/test/templates. -->
+                        <id>generate-test</id>
+                        <phase>generate-test-sources</phase>
+                        <goals>
+                            <goal>java</goal>
+                        </goals>
+                        <configuration>
+                            <mainClass>net.collections.stencil.generator.Main</mainClass>
+                            <classpathScope>compile</classpathScope>
+                            <arguments>
+                                <argument>--out=${stencil.generated.test}</argument>
+                                <argument>--base-package=${stencil.example.package}</argument>
+                                <argument>--templates=${project.basedir}/src/test/templates</argument>
+                                <argument>--clean</argument>
+                            </arguments>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <!-- The module declaration names the example package, so it is filtered from a template. -->
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-resources-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>module-info</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>copy-resources</goal>
+                        </goals>
+                        <configuration>
+                            <outputDirectory>${stencil.generated.module-info}</outputDirectory>
+                            <resources>
+                                <resource>
+                                    <directory>${project.basedir}/src/main/module-info</directory>
+                                    <filtering>true</filtering>
+                                </resource>
+                            </resources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>add-generated-main</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${stencil.generated.main}</source>
+                                <source>${stencil.generated.module-info}</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>add-generated-test</id>
+                        <phase>generate-test-sources</phase>
+                        <goals>
+                            <goal>add-test-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${stencil.generated.test}</source>
+                            </sources>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+</project>

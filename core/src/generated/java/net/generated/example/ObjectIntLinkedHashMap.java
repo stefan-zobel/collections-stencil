@@ -1,0 +1,855 @@
+// Generated from template linked-objectkey/ObjectVTypeLinkedHashMap.java. Edit the template, not this file.
+package net.generated.example;
+
+import java.util.Arrays;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.NoSuchElementException;
+import java.util.Objects;
+import java.util.concurrent.ThreadLocalRandom;
+
+import net.generated.example.function.ObjectIntConsumer;
+import net.generated.example.function.ObjectIntPredicate;
+
+/**
+ * Hash map from object keys to {@code int} values that iterates in insertion order.
+ *
+ * <h2>Design</h2>
+ * <ul>
+ *   <li><b>Entries:</b> an {@code int[]} of stored hashes, an {@code Object[]} of keys, and a
+ *       parallel {@code int[]} of values, in insertion order. A new entry is appended, so
+ *       iteration is a sequential scan of the arrays.</li>
+ *   <li><b>Index table:</b> an {@code int[]} with linear probing. A slot holds the position of
+ *       an entry plus one in its low bits and hash bits (a tag) in the remaining high bits;
+ *       {@code 0} is an empty slot. A lookup compares the tag before it reads a key, so a
+ *       lookup of an absent key usually reads only the index table and never calls
+ *       {@code equals}. A lookup of a present key reads the index table, the key, and the
+ *       value.</li>
+ *   <li><b>Hashing:</b> the murmur3 finalizer applied to {@code key.hashCode() ^ seed}, with a
+ *       per-instance random {@code seed}. The highest bits select the home slot, the bits below
+ *       them form the tag. A nonlinear mixer is needed because hash codes of keys such as
+ *       decimal strings form arithmetic patterns.</li>
+ *   <li><b>Stored hashes:</b> growing and compacting rebuild the index table from the stored
+ *       hashes, and a removal by position ({@link #indexRemove}, {@link #pollFirst},
+ *       {@link #removeIf}) finds the index slot of the entry from its stored hash and its
+ *       position. Neither calls {@code hashCode} or {@code equals} on a key.</li>
+ *   <li><b>Key comparison:</b> tag first, then by reference, then with {@code equals}.</li>
+ *   <li><b>The {@code null} key</b> is an entry like any other, with the hash code {@code 0}, so
+ *       it has its place in the iteration order.</li>
+ *   <li><b>Removal</b> leaves a hole in the entry arrays and a tombstone in the index table;
+ *       entries do not move, and the key reference is cleared. Holes inside the entry range are
+ *       marked in a bitmap that is allocated with the first such hole; a hole at either end
+ *       just shrinks the range. When the entry arrays are full, they are compacted in place if
+ *       at least a quarter of them is unused, and grow otherwise. Both rebuild the index table,
+ *       which removes the tombstones.</li>
+ *   <li><b>Order:</b> {@link #put} on a present key keeps the position of its entry.
+ *       {@link #putLast} and {@link #moveToLast} make an entry the last one (for example for a
+ *       least-recently-used cache); {@link #pollFirst} and {@link #pollLast} remove at the
+ *       ends.</li>
+ *   <li><b>Index handles</b> are entry positions. Removals do not move entries, but the
+ *       contract of {@link ObjectIntMap} still applies: a handle is valid until the next
+ *       insertion, removal, or {@link #moveToLast}.</li>
+ *   <li><b>Load factor:</b> the maximum ratio of entry positions to index slots. The default
+ *       {@value #DEFAULT_LOAD_FACTOR} keeps the index table small.</li>
+ * </ul>
+ * Memory: a stored hash, a key reference, and a {@code int} value per entry position and
+ * 4 bytes per index slot, without a link per entry.
+ * <p>
+ * See {@link ObjectIntMap} for the contract. Two maps are equal if they contain the same
+ * mappings, whatever their order. This class is not thread-safe.
+ *
+ * @param <K> the type of the keys
+ */
+public final class ObjectIntLinkedHashMap<K> implements ObjectIntMap<K> {
+
+    /** Default maximum ratio of entries (holes included) to index slots. */
+    public static final float DEFAULT_LOAD_FACTOR = 0.75f;
+
+    /** Default number of entries the map can hold without resizing. */
+    public static final int DEFAULT_EXPECTED_SIZE = 16;
+
+    private static final int MIN_SLOTS = 8;
+    private static final int MAX_SLOTS = 1 << 30;
+    /** Index slot of a removed entry: position part {@code 0}, so it never denotes an entry. */
+    private static final int TOMBSTONE = Integer.MIN_VALUE;
+
+    private final float loadFactor;
+    private final int seed;
+
+    /** Stored hashes of the entries; positions {@code [head, end)} are in use. */
+    private int[] hashes;
+    /** Keys, parallel to {@link #hashes}; {@code null} at unused positions. */
+    private Object[] keys;
+    /** Values, parallel to {@link #hashes}. */
+    private int[] values;
+    /** Index table; its length is a power of two. */
+    private int[] index;
+    /** {@code log2(index.length)}: the number of low bits of a slot that hold the position plus one. */
+    private int bits;
+    /** {@code 32 - bits}. */
+    private int shift;
+    /** Position of the first entry (if the map is not empty). */
+    private int head;
+    /** Position behind the last entry. */
+    private int end;
+    /** Number of mappings. */
+    private int size;
+    /** Number of index slots that are not empty: one per entry, plus the tombstones. */
+    private int occupied;
+    /** Bit {@code e} is set if position {@code e} in {@code (head, end)} is a hole; {@code null} without holes. */
+    private long[] holes;
+
+    /** An empty map with room for {@link #DEFAULT_EXPECTED_SIZE} mappings. */
+    public ObjectIntLinkedHashMap() {
+        this(DEFAULT_EXPECTED_SIZE, DEFAULT_LOAD_FACTOR);
+    }
+
+    /**
+     * An empty map with room for {@code expectedSize} mappings.
+     *
+     * @param expectedSize the number of mappings the map can hold without resizing
+     * @throws IllegalArgumentException if {@code expectedSize} is negative or too large
+     */
+    public ObjectIntLinkedHashMap(int expectedSize) {
+        this(expectedSize, DEFAULT_LOAD_FACTOR);
+    }
+
+    /**
+     * An empty map with room for {@code expectedSize} mappings at the given load factor.
+     *
+     * @param expectedSize the number of mappings the map can hold without resizing
+     * @param loadFactor the maximum fill of the index table, in {@code (0, 1)}
+     * @throws IllegalArgumentException if {@code expectedSize} is negative or too large, or
+     *         {@code loadFactor} is not in {@code (0, 1)}
+     */
+    public ObjectIntLinkedHashMap(int expectedSize, float loadFactor) {
+        if (expectedSize < 0) {
+            throw new IllegalArgumentException("expectedSize must be >= 0: " + expectedSize);
+        }
+        if (!(loadFactor > 0f && loadFactor < 1f)) {
+            throw new IllegalArgumentException("loadFactor must be in (0, 1): " + loadFactor);
+        }
+        this.loadFactor = loadFactor;
+        this.seed = ThreadLocalRandom.current().nextInt();
+        allocate(slotsFor(expectedSize, loadFactor));
+    }
+
+    /**
+     * A map with the mappings of {@code other} in its iteration order.
+     *
+     * @param other the map to copy (any implementation)
+     */
+    public ObjectIntLinkedHashMap(ObjectIntMap<? extends K> other) {
+        this(other.size());
+        putAll(other);
+    }
+
+    /** The hash of a key: the murmur3 finalizer of {@code hashCode ^ seed}, {@code 0} as the hash code of {@code null}. */
+    private static int hash(Object key, int seed) {
+        int h = (key == null ? 0 : key.hashCode()) ^ seed;
+        h ^= h >>> 16;
+        h *= 0x85EB_CA6B;
+        h ^= h >>> 13;
+        h *= 0xC2B2_AE35;
+        h ^= h >>> 16;
+        return h;
+    }
+
+    /** The entry position in a slot, {@code -1} for a tombstone. */
+    private int position(int slot) {
+        return (slot & (index.length - 1)) - 1;
+    }
+
+    private boolean isHole(int e) {
+        final long[] h = holes;
+        return h != null && (h[e >>> 6] & (1L << e)) != 0;
+    }
+
+    /** The key at position {@code e}. */
+    @SuppressWarnings("unchecked")
+    private K keyAt(int e) {
+        return (K) keys[e];
+    }
+
+    // ------------------------------------------------------------------
+    // Queries
+    // ------------------------------------------------------------------
+
+    @Override
+    public int size() {
+        return size;
+    }
+
+    @Override
+    public boolean isEmpty() {
+        return size == 0;
+    }
+
+    @Override
+    public boolean containsKey(Object key) {
+        return find(key) >= 0;
+    }
+
+    @Override
+    public int get(Object key) {
+        int e = find(key);
+        return e >= 0 ? values[e] : 0;
+    }
+
+    @Override
+    public int getOrDefault(Object key, int defaultValue) {
+        int e = find(key);
+        return e >= 0 ? values[e] : defaultValue;
+    }
+
+    // ------------------------------------------------------------------
+    // Updates
+    // ------------------------------------------------------------------
+
+    @Override
+    public int put(K key, int value) {
+        int h = hash(key, seed);
+        int s = probe(key, h);
+        if (s >= 0) {
+            int e = position(index[s]);
+            int old = values[e];
+            values[e] = value;
+            return old;
+        }
+        insertNew(~s, h, key, value);
+        return 0;
+    }
+
+    @Override
+    public boolean putIfAbsent(K key, int value) {
+        int h = hash(key, seed);
+        int s = probe(key, h);
+        if (s >= 0) {
+            return false;
+        }
+        insertNew(~s, h, key, value);
+        return true;
+    }
+
+    @Override
+    public int addTo(K key, int increment) {
+        int h = hash(key, seed);
+        int s = probe(key, h);
+        if (s >= 0) {
+            return values[position(index[s])] += increment;
+        }
+        insertNew(~s, h, key, increment);
+        return increment;
+    }
+
+    @Override
+    public int remove(Object key) {
+        int s = probe(key, hash(key, seed));
+        if (s < 0) {
+            return 0;
+        }
+        int e = position(index[s]);
+        int old = values[e];
+        delete(s, e);
+        return old;
+    }
+
+    @Override
+    public void clear() {
+        Arrays.fill(keys, head, end, null);
+        Arrays.fill(index, 0);
+        if (holes != null) {
+            Arrays.fill(holes, 0L);
+        }
+        head = 0;
+        end = 0;
+        size = 0;
+        occupied = 0;
+    }
+
+    @Override
+    public void ensureCapacity(int expectedSize) {
+        int slots = slotsFor(expectedSize, loadFactor);
+        if (slots > index.length) {
+            rebuild(slots);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Insertion order
+    // ------------------------------------------------------------------
+
+    /**
+     * Associates {@code value} with {@code key} and makes the entry the last one in iteration
+     * order, whether or not the key was present.
+     *
+     * @param key the key, may be {@code null}
+     * @param value the new value
+     * @return the previous value, or {@code 0} if the key was absent
+     */
+    public int putLast(K key, int value) {
+        int h = hash(key, seed);
+        int s = probe(key, h);
+        if (s < 0) {
+            insertNew(~s, h, key, value);
+            return 0;
+        }
+        int e = position(index[s]);
+        int old = values[e];
+        values[e] = value;
+        moveToLast(s, e);
+        return old;
+    }
+
+    /**
+     * Makes the entry of {@code key} the last one in iteration order.
+     *
+     * @param key the key, may be {@code null}
+     * @return {@code false} if the key is absent
+     */
+    public boolean moveToLast(Object key) {
+        int s = probe(key, hash(key, seed));
+        if (s < 0) {
+            return false;
+        }
+        moveToLast(s, position(index[s]));
+        return true;
+    }
+
+    private void moveToLast(int s, int e) {
+        if (e == end - 1) {
+            return;
+        }
+        if (end == keys.length) {
+            Object key = keys[e];
+            int h = hashes[e];
+            makeRoom();
+            s = probe(key, h);
+            e = position(index[s]);
+            if (e == end - 1) {
+                return;
+            }
+        }
+        int h = hashes[e];
+        Object k = keys[e];
+        int v = values[e];
+        drop(e);
+        int at = end++;
+        hashes[at] = h;
+        keys[at] = k;
+        values[at] = v;
+        index[s] = (index[s] & -index.length) | (at + 1);
+    }
+
+    /**
+     * The key of the first entry in iteration order.
+     *
+     * @return the first key, possibly {@code null}
+     * @throws NoSuchElementException if the map is empty
+     */
+    public K firstKey() {
+        if (size == 0) {
+            throw new NoSuchElementException();
+        }
+        return keyAt(head);
+    }
+
+    /**
+     * The key of the last entry in iteration order.
+     *
+     * @return the last key, possibly {@code null}
+     * @throws NoSuchElementException if the map is empty
+     */
+    public K lastKey() {
+        if (size == 0) {
+            throw new NoSuchElementException();
+        }
+        return keyAt(end - 1);
+    }
+
+    /**
+     * Removes the first entry and returns its value.
+     *
+     * @return the removed value
+     * @throws NoSuchElementException if the map is empty
+     */
+    public int pollFirst() {
+        if (size == 0) {
+            throw new NoSuchElementException();
+        }
+        return indexRemove(head);
+    }
+
+    /**
+     * Removes the last entry and returns its value.
+     *
+     * @return the removed value
+     * @throws NoSuchElementException if the map is empty
+     */
+    public int pollLast() {
+        if (size == 0) {
+            throw new NoSuchElementException();
+        }
+        return indexRemove(end - 1);
+    }
+
+    /**
+     * Removes the first entry and passes its key and value to {@code action}.
+     *
+     * @param action receives the key and value of the removed entry
+     * @return {@code false} if the map is empty
+     */
+    public boolean pollFirst(ObjectIntConsumer<? super K> action) {
+        if (size == 0) {
+            return false;
+        }
+        K key = keyAt(head);
+        action.accept(key, indexRemove(head));
+        return true;
+    }
+
+    /**
+     * Removes the last entry and passes its key and value to {@code action}.
+     *
+     * @param action receives the key and value of the removed entry
+     * @return {@code false} if the map is empty
+     */
+    public boolean pollLast(ObjectIntConsumer<? super K> action) {
+        if (size == 0) {
+            return false;
+        }
+        K key = keyAt(end - 1);
+        action.accept(key, indexRemove(end - 1));
+        return true;
+    }
+
+    /**
+     * Handle of the last entry in iteration order, or {@code -1} if the map is empty.
+     *
+     * @return the handle of the last entry, or {@code -1}
+     */
+    public int lastIndex() {
+        return size == 0 ? -1 : end - 1;
+    }
+
+    /**
+     * Handle of the entry before {@code index} in iteration order, or {@code -1} if there is none.
+     *
+     * @param index an existing handle
+     * @return the handle of the previous entry, or {@code -1}
+     */
+    public int prevIndex(int index) {
+        assert index >= head && index < end && !isHole(index) : "index does not exist: " + index;
+        int e = index - 1;
+        if (holes != null) {
+            while (e > head && isHole(e)) {
+                e--;
+            }
+        }
+        return e >= head ? e : -1;
+    }
+
+    // ------------------------------------------------------------------
+    // Index handles
+    // ------------------------------------------------------------------
+
+    @Override
+    public int indexOf(Object key) {
+        int s = probe(key, hash(key, seed));
+        return s >= 0 ? position(index[s]) : s;
+    }
+
+    @Override
+    public boolean indexExists(int index) {
+        return index >= 0;
+    }
+
+    @Override
+    public int indexGet(int index) {
+        assert index >= head && index < end && !isHole(index) : "index does not exist: " + index;
+        return values[index];
+    }
+
+    @Override
+    public int indexReplace(int index, int value) {
+        assert index >= head && index < end && !isHole(index) : "index does not exist: " + index;
+        int old = values[index];
+        values[index] = value;
+        return old;
+    }
+
+    @Override
+    public void indexInsert(int index, K key, int value) {
+        int h = hash(key, seed);
+        assert index < 0 && probe(key, h) == index : "not the handle of this absent key: " + index;
+        insertNew(~index, h, key, value);
+    }
+
+    @Override
+    public int indexRemove(int index) {
+        assert index >= head && index < end && !isHole(index) : "index does not exist: " + index;
+        int old = values[index];
+        delete(slotOf(index), index);
+        return old;
+    }
+
+    // ------------------------------------------------------------------
+    // Iteration and bulk removal
+    // ------------------------------------------------------------------
+
+    @Override
+    public int firstIndex() {
+        return size == 0 ? -1 : head;
+    }
+
+    @Override
+    public int nextIndex(int index) {
+        assert index >= head && index < end && !isHole(index) : "index does not exist: " + index;
+        int e = index + 1;
+        if (holes != null) {
+            final int last = end - 1;
+            while (e < last && isHole(e)) {
+                e++;
+            }
+        }
+        return e < end ? e : -1;
+    }
+
+    @Override
+    public K indexKey(int index) {
+        assert index >= head && index < end && !isHole(index) : "index does not exist: " + index;
+        return keyAt(index);
+    }
+
+    @Override
+    public boolean removeIf(ObjectIntPredicate<? super K> predicate) {
+        boolean removed = false;
+        // Removals do not move entries; they may advance head and lower end.
+        for (int e = head; e < end; e++) {
+            if (!isHole(e) && predicate.test(keyAt(e), values[e])) {
+                delete(slotOf(e), e);
+                removed = true;
+            }
+        }
+        return removed;
+    }
+
+    @Override
+    @SuppressWarnings("unchecked")
+    public void forEach(ObjectIntConsumer<? super K> action) {
+        final Object[] ks = keys;
+        final int[] vs = values;
+        final long[] h = holes;
+        final int to = end;
+        if (h == null) {
+            for (int e = head; e < to; e++) {
+                action.accept((K) ks[e], vs[e]);
+            }
+        } else {
+            for (int e = head; e < to; e++) {
+                if ((h[e >>> 6] & (1L << e)) == 0) {
+                    action.accept((K) ks[e], vs[e]);
+                }
+            }
+        }
+    }
+
+    /**
+     * A new {@link LinkedHashMap} with the mappings of this map, values boxed, in iteration order.
+     *
+     * @return a new {@link LinkedHashMap}
+     */
+    @Override
+    public Map<K, Integer> toMap() {
+        Map<K, Integer> map = LinkedHashMap.newLinkedHashMap(size);
+        forEach(map::put);
+        return map;
+    }
+
+    /** Equal to any {@link ObjectIntMap} with the same mappings, whatever the order. */
+    @Override
+    public boolean equals(Object o) {
+        if (this == o) {
+            return true;
+        }
+        if (!(o instanceof ObjectIntMap<?> other) || other.size() != size) {
+            return false;
+        }
+        for (int e = head; e < end; e++) {
+            if (!isHole(e) && !containsEntry(other, keys[e], values[e])) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Whether {@code map} maps {@code key} to {@code value}. */
+    private static boolean containsEntry(ObjectIntMap<?> map, Object key, int value) {
+        int i = map.indexOf(key);
+        return map.indexExists(i) && map.indexGet(i) == value;
+    }
+
+    /** Same formula as {@link java.util.Map#hashCode()} on boxed entries. */
+    @Override
+    public int hashCode() {
+        int h = 0;
+        for (int e = head; e < end; e++) {
+            if (!isHole(e)) {
+                h += Objects.hashCode(keys[e]) ^ Integer.hashCode(values[e]);
+            }
+        }
+        return h;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder(Math.min(size, 1 << 16) * 16 + 2).append('{');
+        forEach((k, v) -> {
+            if (sb.length() > 1) {
+                sb.append(", ");
+            }
+            sb.append(k == this ? "(this Map)" : k).append('=').append(v);
+        });
+        return sb.append('}').toString();
+    }
+
+    // ------------------------------------------------------------------
+    // Internals
+    // ------------------------------------------------------------------
+
+    /** Entry position of {@code key}, or {@code -1} if absent. */
+    private int find(Object key) {
+        final int[] ix = index;
+        final Object[] ks = keys;
+        final int mask = ix.length - 1;
+        final int b = bits;
+        int h = hash(key, seed);
+        int tag = h << b;
+        int i = h >>> shift;
+        for (int s; (s = ix[i]) != 0; i = (i + 1) & mask) {
+            if ((s ^ tag) >>> b == 0) {
+                int e = (s & mask) - 1;
+                if (e >= 0) {
+                    Object k = ks[e];
+                    if (k == key || (key != null && key.equals(k))) {
+                        return e;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Index slot of {@code key} (with hash {@code h}) if present, otherwise {@code ~slot} of the
+     * slot for its insertion: the first tombstone on the probe path, or the empty slot that ends it.
+     */
+    private int probe(Object key, int h) {
+        final int[] ix = index;
+        final Object[] ks = keys;
+        final int mask = ix.length - 1;
+        final int b = bits;
+        int tag = h << b;
+        int i = h >>> shift;
+        int free = -1;
+        for (int s; (s = ix[i]) != 0; i = (i + 1) & mask) {
+            if ((s ^ tag) >>> b == 0) {
+                int e = (s & mask) - 1;
+                if (e >= 0) {
+                    Object k = ks[e];
+                    if (k == key || (key != null && key.equals(k))) {
+                        return i;
+                    }
+                }
+            }
+            if (s == TOMBSTONE && free < 0) {
+                free = i;
+            }
+        }
+        return ~(free >= 0 ? free : i);
+    }
+
+    /** Index slot of the entry at position {@code e}, found from its stored hash without comparing keys. */
+    private int slotOf(int e) {
+        final int[] ix = index;
+        final int mask = ix.length - 1;
+        final int target = e + 1;
+        int i = hashes[e] >>> shift;
+        while ((ix[i] & mask) != target) {
+            i = (i + 1) & mask;
+        }
+        return i;
+    }
+
+    /** First empty slot on the probe path of hash {@code h} (the table has no tombstones after a rebuild). */
+    private int emptySlot(int h) {
+        final int[] ix = index;
+        final int mask = ix.length - 1;
+        int i = h >>> shift;
+        while (ix[i] != 0) {
+            i = (i + 1) & mask;
+        }
+        return i;
+    }
+
+    /** Appends an absent key with hash {@code h}; {@code s} is its insertion slot from {@link #probe}. */
+    private void insertNew(int s, int h, K key, int value) {
+        // A position that a removal at the end gave back has left its tombstone behind, so the
+        // index table can fill up before the entry arrays do.
+        if (end == keys.length || (index[s] == 0 && occupied == keys.length)) {
+            makeRoom();
+            s = emptySlot(h);
+        }
+        if (index[s] == 0) {
+            occupied++;
+        }
+        int at = end++;
+        hashes[at] = h;
+        keys[at] = key;
+        values[at] = value;
+        index[s] = (h << bits) | (at + 1);
+        size++;
+    }
+
+    /** Removes the entry at position {@code e}, whose index slot is {@code s}. */
+    private void delete(int s, int e) {
+        index[s] = TOMBSTONE;
+        size--;
+        drop(e);
+    }
+
+    /**
+     * Takes position {@code e} out of the entry range and clears its key: shrinks the range at its
+     * ends, marks a hole inside.
+     */
+    private void drop(int e) {
+        keys[e] = null;
+        if (e == head) {
+            int h = e + 1;
+            while (h < end && isHole(h)) {
+                h++;
+            }
+            head = h;
+        } else if (e == end - 1) {
+            int t = e;
+            final long[] hs = holes;
+            if (hs != null) {
+                while (t - 1 > head && (hs[(t - 1) >>> 6] & (1L << (t - 1))) != 0) {
+                    t--;
+                    hs[t >>> 6] &= ~(1L << t); // the position is appended to again
+                }
+            }
+            end = t;
+        } else {
+            if (holes == null) {
+                holes = new long[(keys.length + 63) >>> 6];
+            }
+            holes[e >>> 6] |= 1L << e;
+        }
+    }
+
+    /** The entry arrays are full: compacts them if a quarter is unused, grows otherwise. */
+    private void makeRoom() {
+        int capacity = keys.length;
+        if (capacity - size >= Math.max(1, capacity >>> 2)) {
+            rebuild(index.length);
+        } else {
+            if (index.length >= MAX_SLOTS) {
+                throw new IllegalStateException("Maximum capacity exceeded: " + capacity);
+            }
+            rebuild(index.length << 1);
+        }
+    }
+
+    /**
+     * Moves the entries to the front of entry arrays for an index table of {@code slots} slots,
+     * and rebuilds the table from the stored hashes.
+     */
+    private void rebuild(int slots) {
+        final int[] oldHashes = hashes;
+        final Object[] oldKeys = keys;
+        final int[] oldValues = values;
+        final int from = head;
+        final int to = end;
+        final boolean inPlace = slots == index.length;
+        if (inPlace) {
+            Arrays.fill(index, 0);
+        } else {
+            allocate(slots);
+        }
+        final int[] hs = hashes;
+        final Object[] ks = keys;
+        final int[] vs = values;
+        int n = 0;
+        for (int e = from; e < to; e++) {
+            if (!isHole(e)) {
+                hs[n] = oldHashes[e];
+                ks[n] = oldKeys[e];
+                vs[n] = oldValues[e];
+                n++;
+            }
+        }
+        if (inPlace) {
+            Arrays.fill(ks, n, to, null); // the old positions of moved keys
+            if (holes != null) {
+                Arrays.fill(holes, 0L);
+            }
+        } else {
+            holes = null;
+        }
+        head = 0;
+        end = n;
+        occupied = n;
+        final int[] ix = index;
+        final int mask = ix.length - 1;
+        final int b = bits;
+        final int sh = shift;
+        for (int e = 0; e < n; e++) {
+            int h = hs[e];
+            int i = h >>> sh;
+            while (ix[i] != 0) {
+                i = (i + 1) & mask;
+            }
+            ix[i] = (h << b) | (e + 1);
+        }
+    }
+
+    /** New arrays; {@link #holes} is still the bitmap of the old ones. */
+    private void allocate(int slots) {
+        int capacity = capacity(slots, loadFactor);
+        hashes = new int[capacity];
+        keys = new Object[capacity];
+        values = new int[capacity];
+        index = new int[slots];
+        bits = Integer.numberOfTrailingZeros(slots);
+        shift = 32 - bits;
+    }
+
+    /** Number of entry positions for an index table of {@code slots} slots (at least one slot stays empty). */
+    private static int capacity(int slots, float loadFactor) {
+        return Math.min(slots - 1, Math.max(1, (int) (slots * (double) loadFactor)));
+    }
+
+    /** Index slots (a power of two) for {@code expectedSize} entries. */
+    static int slotsFor(int expectedSize, float loadFactor) {
+        long needed = (long) Math.ceil(expectedSize / (double) loadFactor) + 1;
+        if (needed > MAX_SLOTS) {
+            throw new IllegalArgumentException("expectedSize too large: " + expectedSize);
+        }
+        int slots = needed <= MIN_SLOTS ? MIN_SLOTS : Integer.highestOneBit((int) needed - 1) << 1;
+        while (capacity(slots, loadFactor) < expectedSize && slots < MAX_SLOTS) {
+            slots <<= 1;
+        }
+        return slots;
+    }
+
+    /** Number of entry positions (for tests). */
+    int capacity() {
+        return keys.length;
+    }
+
+    /** Number of positions in the entry range that are holes (for tests). */
+    int holeCount() {
+        return end - head - size;
+    }
+}
