@@ -1,0 +1,58 @@
+# Builds every module with JDK 25 (the enforcer rule requires it) and runs the tests on JDK 21 and
+# on JDK 25. Also checks that the checked-in example classes in core/src/generated match the
+# templates, and (JDK 25 job) that the sources and Javadoc jars of a release build.
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Weekly, Monday 05:17 UTC: catches changes of the runner images and of the JDK updates.
+    - cron: '17 5 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: test on JDK ${{ matrix.test-jdk }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        test-jdk: [21, 25]
+    steps:
+      - uses: actions/checkout@v7
+
+      # Both JDKs in one step: the last one (25) becomes JAVA_HOME and builds; every JDK is
+      # also available as JAVA_HOME_<major>_X64.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: zulu
+          java-version: |
+            21
+            25
+          cache: maven
+
+      - name: Build with JDK 25, test on JDK ${{ matrix.test-jdk }}
+        env:
+          TEST_JDK: ${{ matrix.test-jdk }}
+        run: |
+          test_home_var="JAVA_HOME_${TEST_JDK}_X64"
+          test_java="${!test_home_var}/bin/java"
+          "$test_java" -version
+          release_profile=""
+          if [ "$TEST_JDK" = "25" ]; then release_profile="-Prelease"; fi
+          ./mvnw -B verify $release_profile "-Djvm=$test_java"
+
+      - name: Generated example classes are up to date
+        run: |
+          if ! git diff --exit-code --stat -- core/src/generated \
+              || [ -n "$(git status --porcelain -- core/src/generated)" ]; then
+            git status --short -- core/src/generated
+            echo "::error::core/src/generated differs from the templates: build locally and commit the regenerated classes."
+            exit 1
+          fi
