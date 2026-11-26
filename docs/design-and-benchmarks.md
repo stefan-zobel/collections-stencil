@@ -1186,8 +1186,10 @@ What the numbers say:
 
 ## Build
 
-The build requires JDK 25 or later (`JAVA_HOME`), the tests run on it; the artifacts run on
-JDK 21 or later (`maven.compiler.release` is 21, untested there). Maven comes with the wrapper.
+The build requires JDK 25 or later (`JAVA_HOME`); the artifacts run on JDK 21 or later
+(`maven.compiler.release` is 21). The CI (`.github/workflows/build.yml`) builds with JDK 25 and
+runs the tests on JDK 21 and 25 (locally: `-Djvm=<jdk 21>/bin/java`). Maven comes with the
+wrapper.
 
 ```powershell
 .\mvnw.cmd -B install         # Windows: generate sources, run all tests, bench\target\benchmarks.jar

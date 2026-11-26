@@ -1,5 +1,10 @@
 # collections-stencil
 
+[![build](https://github.com/stefan-zobel/collections-stencil/actions/workflows/build.yml/badge.svg)](https://github.com/stefan-zobel/collections-stencil/actions/workflows/build.yml)
+[![Maven Central](https://img.shields.io/maven-central/v/net.sourceforge.streamsupport/collections.stencil-processor)](https://central.sonatype.com/artifact/net.sourceforge.streamsupport/collections.stencil-processor)
+[![javadoc](https://javadoc.io/badge2/net.sourceforge.streamsupport/collections.stencil-annotations/javadoc.svg)](https://javadoc.io/doc/net.sourceforge.streamsupport/collections.stencil-annotations)
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+
 **Fast primitive collections for Java, generated as source code into your own project.**
 
 Java's collections box every `int`, `long`, and `double`. A `HashMap<Long, Long>` stores an
@@ -17,9 +22,6 @@ classes you never use:
 
 If you would rather own and edit the code, a command line generator writes the same classes
 once into your source tree.
-
-> **Status:** version `1.0.0`, not yet on Maven Central. To try it, build it
-> locally (see [Installation](#installation)).
 
 ## Contents
 
@@ -67,9 +69,11 @@ Requirements:
 
 - **Using stencil:** JDK 21 or later to compile your project. The generated sources also
   compile with `--release 19`.
-- **Building stencil:** JDK 25 or later. stencil is built and tested with JDK 25.
+- **Building stencil:** JDK 25 or later. stencil is built with JDK 25 and tested on JDK 21
+  and 25.
 
-Until the first release is on Maven Central, install it into your local Maven repository:
+stencil is on Maven Central (group `net.sourceforge.streamsupport`); the
+[Quick Start](#quick-start) shows the build configuration. To build it from source instead:
 
 ```shell
 git clone https://github.com/stefan-zobel/collections-stencil.git
@@ -78,8 +82,8 @@ cd collections-stencil
 ```
 
 This builds and tests all modules and installs `collections.stencil-annotations`,
-`collections.stencil-processor`, and `collections.stencil-generator` with the version
-`1.0.0`.
+`collections.stencil-processor`, and `collections.stencil-generator` into your local Maven
+repository.
 
 ## Quick Start
 
@@ -118,11 +122,10 @@ configured explicitly, as here.
 </build>
 ```
 
-**Gradle** the processor supports incremental compilation:
+**Gradle:** the processor supports incremental compilation:
 
 ```kotlin
 repositories {
-    mavenLocal()     // until the first release is on Maven Central
     mavenCentral()
 }
 
@@ -332,10 +335,12 @@ A complete tour of the API is in
 
 The generator writes the same classes once as sources into a directory: for projects that want
 to own and modify the code, or that cannot use an annotation processor. The jar has no
-dependencies:
+dependencies; download it from Maven Central
+([collections.stencil-generator-1.0.0.jar](https://repo1.maven.org/maven2/net/sourceforge/streamsupport/collections.stencil-generator/1.0.0/collections.stencil-generator-1.0.0.jar))
+or take it from `generator/target` after a build:
 
 ```shell
-java -jar generator/target/collections.stencil-generator-1.0.0.jar \
+java -jar collections.stencil-generator-1.0.0.jar \
     --out=src/main/java \
     --include='LongLongHashMap|IntArrayList' \
     --package=com.example.stats \
